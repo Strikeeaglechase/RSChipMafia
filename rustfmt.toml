@@ -1,0 +1,5 @@
+tab_spaces = 3
+hard_tabs = true
+struct_lit_width = 48
+blank_lines_upper_bound = 3
+max_width = 160

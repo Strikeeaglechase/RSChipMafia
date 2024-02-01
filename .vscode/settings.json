@@ -1,0 +1,14 @@
+{
+	"rust-analyzer.showUnlinkedFileNotification": false,
+	"editor.semanticTokenColorCustomizations": {
+		"enabled": true,
+		"rules": {
+			"*.mutable": {
+				"underline": false,
+			}
+		}
+	},
+	"cSpell.words": [
+		"missilelauncher"
+	]
+}

@@ -1,0 +1,12 @@
+[package]
+name = "rs_chip_mafia"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+protologic_core = "10.0.0"
+rand = "0.7.3"
+enum_mac = { path = "../enum_mac" }
