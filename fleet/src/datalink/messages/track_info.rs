@@ -9,11 +9,12 @@ pub struct TrackInfo {
 	pub track_id: u16,
 	pub contact_id: u32,
 	pub contact_type: RadarTargetType,
+	pub is_allied: bool,
 }
 
 impl TrackInfo {
-	pub fn new(track_id: u16, contact_id: u32, contact_type: RadarTargetType) -> TrackInfo {
-		TrackInfo { track_id, contact_id, contact_type }
+	pub fn new(track_id: u16, contact_id: u32, contact_type: RadarTargetType, is_allied: bool) -> TrackInfo {
+		TrackInfo { track_id, contact_id, contact_type, is_allied }
 	}
 }
 
@@ -49,6 +50,7 @@ impl DatalinkMessage for TrackInfo {
 		view.write(self.track_id as u64, 12); // 16
 		view.write(self.contact_id as u64, 32); // 48
 		view.write(radar_to_i32(self.contact_type) as u64, 4); // 52
+		view.write(if self.is_allied { 1 } else { 0 }, 1);
 
 		view
 	}
@@ -57,8 +59,9 @@ impl DatalinkMessage for TrackInfo {
 		let track_id = view.read(12) as u16;
 		let contact_id = view.read(32) as u32;
 		let contact_type = i32_to_radar(view.read(4) as i32);
+		let is_allied = view.read(1) == 1;
 
-		TrackInfo::new(track_id, contact_id, contact_type)
+		TrackInfo::new(track_id, contact_id, contact_type, is_allied)
 	}
 
 	fn message_type(&self) -> MessageKey {

@@ -1,23 +1,48 @@
 use std::cell::RefCell;
 
-use protologic_core::missile_launcher::{
-	missilelauncher_configure, missilelauncher_get_reloadtime, missilelauncher_trigger, MissileEngineType, MissileWarheadType,
+use protologic_core::{
+	missile_launcher::{
+		missilelauncher_configure, missilelauncher_get_enginetype, missilelauncher_get_reloadtime, missilelauncher_get_warheadtype, missilelauncher_trigger,
+		MissileEngineType, MissileWarheadType,
+	},
+	physics::vehicle_get_position,
+	radar::RadarTargetType,
 };
 
-use crate::{controllers::turret_controller::TurretController, math::utils::now};
+use crate::{
+	controllers::{flight_controller::flight_set_target_point, radar_controller::get_radar_tracks, turret_controller::TurretController},
+	datalink::{
+		datalink::{dl_crunch_id, dl_net_id, send_message},
+		messages::{intercept_task_assign::InterceptTaskAssign, message::Message},
+	},
+	math::{utils::now, vector3::Vector3},
+};
 
 #[derive(Clone, Copy, Debug)]
 struct QueuedLaunch {
 	cell: i32,
-	has_reload_time: bool,
+	times_at_zero: i32,
 }
 
 const MISSILE_LAUNCH_RATE: f32 = 1.0;
+struct InterceptTask {
+	contact_id: i64,
+	#[allow(dead_code)]
+	interceptor_id: u8,
+	ring: u8,
+}
+
 pub struct ShipControlSystem {
 	pub last_shot_time: f32,
 	turrets: Vec<TurretController>,
+
 	queued_launch_cells: Vec<QueuedLaunch>,
 	last_missile_launch_time: f32,
+
+	interceptors: Vec<u8>,
+	intercept_tasks: Vec<InterceptTask>,
+
+	has_started: bool,
 }
 
 impl ShipControlSystem {
@@ -32,21 +57,79 @@ impl ShipControlSystem {
 			],
 			queued_launch_cells: Vec::new(),
 			last_missile_launch_time: 0.0,
+
+			interceptors: Vec::new(),
+			intercept_tasks: Vec::new(),
+
+			has_started: false,
 		}
 	}
 
 	fn init(&mut self) {
-		for i in 0..18 {
-			self.fire_missile(i);
+		if vehicle_get_position().2 > 0.0 {
+			for _ in 0..1 {
+				self.fire_missile(MissileWarheadType::Flak, MissileEngineType::HighThrust);
+			}
+		} else {
+			for _ in 0..1 {
+				self.fire_missile(MissileWarheadType::Nuclear, MissileEngineType::HighThrust);
+			}
 		}
+
 		// self.fire_missile(0);
-		// set_flight_mode(GuidanceMode::Impact);
-		// flight_set_target_point(Vector3::new(200.0, 0.0, 0.0));
-		// flight_set_target_point_velocity(Vector3::new(10.0, 0.0, 10.0))
-		// flight_set_target_point(Vector3::new(5000.0, 0.0, 2000.0))
+		// set_flight_mode(GuidanceMode::StopAtPoint);
+		let side = vehicle_get_position().2.signum();
+		flight_set_target_point(Vector3::new(350.0, 0.0, 500.0 * side));
+
+		self.has_started = true;
 	}
 
 	fn update(&mut self) {
+		if !self.has_started {
+			return;
+		}
+
+		// println!(
+		// 	"Free interceptors: {}, Intercept tasks: {}",
+		// 	self.interceptors.len(),
+		// 	self.intercept_tasks.len()
+		// );
+
+		if self.interceptors.len() > 0 {
+			let tracks = get_radar_tracks();
+			for track in tracks {
+				if track.is_allied // Don't shoot down our missiles
+					|| track.rc_type != RadarTargetType::Missile // Only shoot down missiles
+					|| self.intercept_tasks.iter().any(|f| f.contact_id == track.id)
+				// Don't shoot down the same missile twice
+				{
+					continue;
+				}
+				// let dist = (pos - track.get_current_position()).length();
+				// if dist > 1000.0 {
+				// 	continue;
+				// }
+
+				let mut next_free_ring = 0;
+				for i in 0..15 {
+					if !self.intercept_tasks.iter().any(|f| f.ring == i) {
+						next_free_ring = i;
+						break;
+					}
+				}
+
+				let interceptor = self.interceptors.pop().unwrap();
+				let message = InterceptTaskAssign::new(dl_net_id(track.id).unwrap(), dl_crunch_id(track.id), interceptor, next_free_ring);
+				send_message(Message::InterceptTaskAssign(message));
+				println!("Starting intercept with {} against {}", interceptor, track);
+				self.intercept_tasks.push(InterceptTask {
+					contact_id: track.id,
+					interceptor_id: interceptor,
+					ring: next_free_ring,
+				});
+			}
+		}
+
 		// if let Some(nearest_ship) = radar.get_nearest_ship() {
 		// 	self.turrets.iter_mut().for_each(|f| f.set_target(nearest_ship));
 		// }
@@ -83,41 +166,94 @@ impl ShipControlSystem {
 		}
 	}
 
+	fn handle_dl_message(&mut self, message: Message) {
+		match message {
+			Message::InterceptTaskAssign(task) => {
+				if task.contact_id == 0 && task.target_id == 0 {
+					// Yippy we've got another interceptor to use!
+					self.interceptors.push(task.interceptor_id);
+				}
+			}
+			_ => {}
+		}
+	}
+
 	fn check_queued_launches(&mut self) {
 		let mut unfired_cells: Vec<QueuedLaunch> = Vec::new();
 
-		let mut has_fired = false;
 		// println!("Checking queued launches, currently {} queued", self.queued_launch_cells.len());
 		for cell in self.queued_launch_cells.iter() {
-			let reload_time = missilelauncher_get_reloadtime(cell.cell);
-			if reload_time == 0.0 {
-				if cell.has_reload_time && !has_fired && now() - self.last_missile_launch_time >= MISSILE_LAUNCH_RATE {
-					println!("Firing cell {}", cell.cell);
-					missilelauncher_trigger(cell.cell);
-					has_fired = true;
-					self.last_missile_launch_time = now();
-				} else {
-					unfired_cells.push(QueuedLaunch {
-						cell: cell.cell,
-						has_reload_time: cell.has_reload_time,
-					});
-				}
+			let maybe_unfired = self.maybe_fire_cell(cell);
+			if let Some(unfired) = maybe_unfired {
+				unfired_cells.push(unfired);
 			} else {
-				unfired_cells.push(QueuedLaunch { cell: cell.cell, has_reload_time: true });
+				self.last_missile_launch_time = now();
 			}
 		}
 
 		self.queued_launch_cells = unfired_cells;
 	}
 
-	fn fire_missile(&mut self, cell: i32) {
-		if self.queued_launch_cells.iter().any(|f| f.cell == cell) {
-			println!("Cell {} already queued for launch!", cell);
-			return;
+	fn maybe_fire_cell(&self, cell: &QueuedLaunch) -> Option<QueuedLaunch> {
+		let reload_time = missilelauncher_get_reloadtime(cell.cell);
+
+		if now() - self.last_missile_launch_time < MISSILE_LAUNCH_RATE {
+			let new_times_at_zero = if reload_time == 0.0 { 0 } else { cell.times_at_zero + 1 };
+			return Some(QueuedLaunch {
+				cell: cell.cell,
+				times_at_zero: new_times_at_zero,
+			});
 		}
-		println!("Queueing cell {}, currently {} queued", cell, self.queued_launch_cells.len());
-		self.queued_launch_cells.push(QueuedLaunch { cell, has_reload_time: false });
-		missilelauncher_configure(cell, MissileEngineType::HighThrust, MissileWarheadType::Nuclear, 1.0);
+
+		if reload_time > 0.0 {
+			return Some(QueuedLaunch { cell: cell.cell, times_at_zero: 0 });
+		}
+
+		if cell.times_at_zero > 1 {
+			println!("Firing cell {}", cell.cell);
+			missilelauncher_trigger(cell.cell);
+			return None;
+		}
+
+		return Some(QueuedLaunch {
+			cell: cell.cell,
+			times_at_zero: cell.times_at_zero + 1,
+		});
+	}
+
+	fn fire_missile(&mut self, warhead: MissileWarheadType, engine: MissileEngineType) {
+		// Try to find an already loaded cell with a nuclear missile
+		let cell = (0..18).find(|&i| {
+			let matching_warhead = missilelauncher_get_warheadtype(i) == warhead;
+			let matching_engine = missilelauncher_get_enginetype(i) == engine;
+			let reload_time = missilelauncher_get_reloadtime(i);
+			if !matching_warhead || !matching_engine || reload_time > 0.0 {
+				return false;
+			}
+
+			// Make sure not queued by someone else
+			let not_queued = !self.queued_launch_cells.iter().any(|f| f.cell == i);
+			return not_queued;
+		});
+
+		if let Some(cell) = cell {
+			self.queued_launch_cells.push(QueuedLaunch { cell, times_at_zero: 0 });
+			println!("Queued missile launch for cell {}", cell);
+		} else {
+			// Find a non-queued cell to load
+			let cell = (0..19).find(|&i| {
+				let not_queued = !self.queued_launch_cells.iter().any(|f| f.cell == i);
+				return not_queued;
+			});
+
+			if let Some(cell) = cell {
+				missilelauncher_configure(cell, engine, warhead, 1.0);
+				self.queued_launch_cells.push(QueuedLaunch { cell, times_at_zero: 0 });
+				println!("Queued missile launch for cell {}", cell);
+			} else {
+				println!("No cells available to load missile!");
+			}
+		}
 	}
 
 	fn last_shot_time(&self) -> f32 {
@@ -135,4 +271,8 @@ pub fn init_scs() {
 
 pub fn update_scs() {
 	SCS.with(|scs| scs.borrow_mut().update());
+}
+
+pub fn scs_handle_dl_message(message: Message) {
+	SCS.with(|f| f.borrow_mut().handle_dl_message(message));
 }

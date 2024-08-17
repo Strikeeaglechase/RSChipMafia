@@ -6,7 +6,7 @@ use rand::seq::IteratorRandom;
 
 use crate::{
 	datalink::{
-		datalink::{dl_crunch_id, dl_net_id, send_message},
+		datalink::{dl_crunch_id, dl_net_id, is_position_friendly, own_dl_id, send_message},
 		messages::{message::Message, track_info::TrackInfo, track_position::TrackPosition, track_velocity::TrackVelocity},
 	},
 	get,
@@ -16,6 +16,7 @@ use crate::{
 		vector3::Vector3,
 	},
 	radar_scan_pattern::RadarScanPattern,
+	updatable_debug::UpdatableSphere,
 };
 use std::{cell::RefCell, collections::HashMap, f32::consts::PI};
 
@@ -32,14 +33,14 @@ fn ctn(contact_type: RadarTargetType) -> &'static str {
 }
 
 pub enum RadarMode {
-	STT(i64),
+	STT(u32),
 	TWS,
 	RWS,
 }
 
-const TWS_UPDATE_INTERVAL: f32 = 0.25; // 4 times per second
+const TWS_UPDATE_INTERVAL: f32 = 0.5; // 2 times per second
 const TWS_MAX_AGE: f32 = 5.0; // 5 seconds
-const DL_UPDATE_RATE: f32 = 1.0; // 1 times per second
+const DL_UPDATE_RATE: f32 = 5.0; // Once every 5 seconds
 
 #[derive(Clone, Copy, Debug)]
 pub struct RadarTrack {
@@ -50,6 +51,9 @@ pub struct RadarTrack {
 	pub velocity: Vector3,
 
 	pub last_update_timestamp: f32,
+
+	pub is_allied: bool,
+	pub last_allied_hit_time: f32,
 }
 
 impl RadarTrack {
@@ -62,6 +66,8 @@ impl RadarTrack {
 			velocity: Vector3::zero(),
 
 			last_update_timestamp: now(),
+			is_allied: true,
+			last_allied_hit_time: now(),
 		}
 	}
 
@@ -73,6 +79,14 @@ impl RadarTrack {
 		self.position = new_pos;
 
 		self.last_update_timestamp = now();
+
+		if is_position_friendly(self.position) {
+			self.last_allied_hit_time = now();
+		}
+
+		if now() - self.last_allied_hit_time > 2.0 {
+			self.is_allied = false;
+		}
 	}
 
 	pub fn get_current_position(&self) -> Vector3 {
@@ -98,6 +112,7 @@ impl std::fmt::Display for RadarTrack {
 	}
 }
 
+const IFF_MARKS: bool = true;
 pub struct RadarController {
 	current_scan_index: usize,
 	scan_pattern: RadarScanPattern,
@@ -107,6 +122,8 @@ pub struct RadarController {
 
 	tws_in_row: i32,
 	dl_update_times: HashMap<i64, f32>,
+
+	track_markers: HashMap<i64, UpdatableSphere>,
 }
 
 impl RadarController {
@@ -117,8 +134,9 @@ impl RadarController {
 			tracks: Vec::new(),
 			mode: RadarMode::TWS,
 			tws_in_row: 0,
+
 			dl_update_times: HashMap::new(),
-			// tws_line: None,
+			track_markers: HashMap::new(),
 		}
 	}
 
@@ -126,7 +144,10 @@ impl RadarController {
 		// Grab and update contacts seen last tick
 		let mut contacts: Vec<RadarGetContactInfo> = Vec::new();
 		radar_get_contacts(&mut contacts);
-		contacts.iter().for_each(|f| self.update_contact(f));
+		contacts.iter().for_each(|f| {
+			let t = self.update_contact(f);
+			self.update_track_marker(t.id, t.is_allied, t.position);
+		});
 
 		self.point_radar();
 
@@ -171,8 +192,8 @@ impl RadarController {
 		}
 	}
 
-	fn point_radar_for_stt(&mut self, stt_id: i64) {
-		if let Some(track) = self.get_contact(stt_id) {
+	fn point_radar_for_stt(&mut self, stt_id: u32) {
+		if let Some(track) = self.get_contact_cr(stt_id) {
 			let time = track.time_since_last_update();
 			if time > 1.0 {
 				self.point_radar_for_rws();
@@ -213,35 +234,53 @@ impl RadarController {
 		radar_set_elevation(angles.elevation);
 	}
 
-	fn update_contact(&mut self, contact: &RadarGetContactInfo) {
+	fn update_contact(&mut self, contact: &RadarGetContactInfo) -> RadarTrack {
 		let ut: RadarTrack = if let Some(track) = self.get_mut_contact(contact.id) {
 			track.update_contact(contact);
+			// if contact.target_type == RadarTargetType::Missile && own_dl_id() > 0 {
+			// debug_pause();
+			// }
+
 			track.clone()
 		} else {
 			let track = RadarTrack::new(contact);
-			// println!("New contact: {}", track);
+			self.track_markers.insert(track.id, UpdatableSphere::new());
 			self.tracks.push(track);
 			track.clone()
 		};
 
 		self.maybe_update_dl_track(&ut);
+
+		ut
+	}
+
+	fn update_track_marker(&mut self, id: i64, is_allied: bool, pos: Vector3) {
+		if !IFF_MARKS || own_dl_id() != 0 {
+			return;
+		}
+
+		let sp = self.track_markers.get_mut(&id).unwrap();
+		if !is_allied {
+			sp.set_color(1.0, 0.0, 0.0);
+			sp.set_radius(15.0);
+			sp.set_pos(pos);
+		} else {
+			sp.remove();
+		}
 	}
 
 	fn maybe_update_dl_track(&mut self, track: &RadarTrack) {
 		match track.rc_type {
-			RadarTargetType::SpaceBattleShip /*| RadarTargetType::Missile*/ => {
+			RadarTargetType::SpaceBattleShip | RadarTargetType::Missile => {
+				if (track.rc_type == RadarTargetType::Missile && own_dl_id() > 0) || track.is_allied {
+					return;
+				}
+				let own_pos: Vector3 = vehicle_get_position().into();
+				let dist = (own_pos - track.get_current_position()).length();
 				let last_update = self.dl_update_times.get(&track.id).unwrap_or(&0.0);
-				if now() - last_update > DL_UPDATE_RATE {
-					// println!(
-					// 	"{}: Updating DL for {:?} at {}, previous update time {}",
-					// 	own_dl_id(),
-					// 	track.id,
-					// 	now(),
-					// 	last_update
-					// );
-					// radar_send_dl_update(track.id, track.position.x, track.position.y, track.position.z);
+				if now() - last_update > DL_UPDATE_RATE || dist < 3000.0 {
 					let track_id: u16 = get!(dl_net_id(track.id));
-					let info_packet = TrackInfo::new(track_id, dl_crunch_id(track.id), track.rc_type);
+					let info_packet = TrackInfo::new(track_id, dl_crunch_id(track.id), track.rc_type, track.is_allied);
 					let pos_packet = TrackPosition::new(track_id, track.position);
 					let vel_packet = TrackVelocity::new(track_id, track.velocity);
 
@@ -264,6 +303,10 @@ impl RadarController {
 		self.tracks.iter().find(|f| f.id == id)
 	}
 
+	fn get_contact_cr(&self, id: u32) -> Option<&RadarTrack> {
+		self.tracks.iter().find(|f| dl_crunch_id(f.id) == id)
+	}
+
 	pub fn get_nearest_ship(&self) -> Option<&RadarTrack> {
 		self
 			.tracks
@@ -283,6 +326,10 @@ pub fn radar_update() {
 
 pub fn radar_get_contact(id: i64) -> Option<RadarTrack> {
 	RADAR.with(|radar| radar.borrow().get_contact(id).map(|f| *f))
+}
+
+pub fn get_radar_tracks() -> Vec<RadarTrack> {
+	RADAR.with(|radar| radar.borrow().tracks.clone())
 }
 
 pub fn get_nearest_ship() -> Option<RadarTrack> {

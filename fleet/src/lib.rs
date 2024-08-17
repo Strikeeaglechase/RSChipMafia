@@ -3,7 +3,7 @@ use std::env;
 
 use controllers::flight_controller::VehicleType;
 use math::utils::now;
-use protologic_core::{maneuvering::engine_set_throttle, physics::vehicle_get_position, wait::*};
+use protologic_core::{physics::vehicle_get_position, wait::*};
 
 extern crate protologic_core;
 pub mod controllers;
@@ -13,19 +13,19 @@ pub mod math;
 pub mod missile_control_system;
 pub mod radar_scan_pattern;
 pub mod ship_control_system;
-pub mod updatable_debug_line;
+pub mod updatable_debug;
 
 #[no_mangle]
 pub extern "C" fn tick() {
-	if vehicle_get_position().2 == 5000.0 {
-		engine_set_throttle(1.0);
-		wait_ticks(5000);
-		engine_set_throttle(0.0);
-	}
+	// if vehicle_get_position().2 == -5000.0 {
+	// 	engine_set_throttle(1.0);
+	// 	wait_ticks(5000);
+	// 	engine_set_throttle(0.0);
+	// }
 
-	if vehicle_get_position().2 > 0.0 {
-		return;
-	}
+	// if vehicle_get_position().2 < 0.0 {
+	// 	return;
+	// }
 
 	// Print all environment variables
 	let mut v_type = VehicleType::Ship;
@@ -40,31 +40,8 @@ pub extern "C" fn tick() {
 		}
 	}
 
-	// if v_type == VehicleType::Missile {
-	// 	// println!("")
-	// 	let torque = missile_wheel_torque();
-	// 	let mass = vehicle_get_mass();
-
-	// 	println!("Torque: {}, Mass: {}", torque, mass);
-
-	// 	return;
-	// }
-
 	let mut core = Core::new(v_type);
 	let mut prev_time = now();
-
-	// wheel_set_torque(0.0, 1.0, 0.0);
-	// wait_ticks(1500);
-	// wheel_set_torque(0.0, -1.0, 0.0);
-	// wait_ticks(1500);
-	// wheel_set_torque(0.0, 0.0, 0.0);
-	// engine_set_throttle(1.0);
-	// wait_ticks(2000);
-	// engine_set_throttle(0.0);
-
-	// if vehicle_get_position().2 < 0.0 {
-	// 	return;
-	// }
 
 	println!("Pos: {:?}", vehicle_get_position());
 

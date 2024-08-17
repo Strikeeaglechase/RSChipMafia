@@ -1,4 +1,6 @@
 pub mod assign_attack_target;
+pub mod iff_pos;
+pub mod intercept_task_assign;
 pub mod join_request;
 pub mod leave_network;
 pub mod message;

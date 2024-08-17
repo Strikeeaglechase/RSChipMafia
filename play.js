@@ -1,7 +1,7 @@
 import { exec, spawn } from "child_process";
 import path from "path";
 
-const cp = spawn(`${path.resolve("./player/SaturnsEnvy.exe")}`, [path.resolve("./target/wasm32-wasi/release/opt_rs_chip_mafia.wasm.json.deflate")], {
+const cp = spawn(`${path.resolve("./player/PROTOLOGIC.exe")}`, [path.resolve("./target/wasm32-wasi/release/opt_rs_chip_mafia.wasm.json.deflate")], {
 	detached: true
 });
 // const execPath = path.resolve("./player/SaturnsEnvy.exe");

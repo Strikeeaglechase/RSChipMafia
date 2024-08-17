@@ -7,12 +7,15 @@ use protologic_core::{
 use rand::random;
 
 use crate::{
+	core::configure_control_system,
 	datalink::messages::{join_request::JoinRequest, message::DatalinkMessage},
 	get,
 	math::{utils::now, vector3::Vector3},
+	updatable_debug::UpdatableSphere,
 };
 
 use super::messages::{
+	iff_pos::IFFPosition,
 	leave_network::LeaveNetwork,
 	message::Message,
 	net_info::{self, NetInfo},
@@ -28,6 +31,8 @@ pub struct DatalinkTrack {
 	pub position: Vector3,
 	pub velocity: Vector3,
 	pub last_update_timestamp: f32,
+
+	pub is_allied: bool,
 }
 
 impl DatalinkTrack {
@@ -41,6 +46,7 @@ impl DatalinkTrack {
 			velocity: Vector3::zero(),
 
 			last_update_timestamp: f32::MAX,
+			is_allied: true,
 		}
 	}
 
@@ -78,6 +84,12 @@ impl TimeBlock {
 	}
 }
 
+pub struct FriendlyPosition {
+	pub position: Vector3,
+	pub dl_id: u8,
+	pub sphere: UpdatableSphere,
+}
+
 pub struct Datalink {
 	status: DatalinkStatus,
 	blocks: Vec<TimeBlock>,
@@ -100,13 +112,20 @@ pub struct Datalink {
 	id_map: HashMap<u32, u16>,
 	next_track_id: u16,
 	next_id: u8,
+
 	tracks: Vec<DatalinkTrack>,
+	friendly_positions: Vec<FriendlyPosition>,
 
 	is_host: bool,
 	pub tick: u32,
+
+	messages_pushed_last_second: u32,
+	prev_mpls: u32,
+	last_count_reset_time: f32,
 }
 
 const INVALID: u8 = u8::MAX;
+const IFF_FRIEND_DISTANCE: f32 = 150.0;
 
 impl Datalink {
 	fn new() -> Datalink {
@@ -131,10 +150,16 @@ impl Datalink {
 			id_map: HashMap::new(),
 			next_track_id: 0,
 			next_id: 0,
+
 			tracks: Vec::new(),
+			friendly_positions: Vec::new(),
 
 			is_host: false,
 			tick: 0,
+
+			messages_pushed_last_second: 0,
+			prev_mpls: 0,
+			last_count_reset_time: 0.0,
 		}
 	}
 
@@ -152,6 +177,8 @@ impl Datalink {
 		self.our_block = 1;
 
 		self.is_host = true;
+
+		configure_control_system();
 	}
 
 	fn is_our_turn(&self) -> bool {
@@ -159,7 +186,7 @@ impl Datalink {
 	}
 
 	fn is_host_transmit_turn(&self) -> bool {
-		0 == (self.tick + 1) % u32::from(self.total_blocks) && self.is_host
+		0 == (self.tick) % u32::from(self.total_blocks) && self.is_host
 	}
 
 	fn update(&mut self) {
@@ -177,6 +204,26 @@ impl Datalink {
 
 		if self.status != DatalinkStatus::Joined {
 			return;
+		}
+
+		// if self.is_host {
+		// 	let expected_pps = 100.0 / self.total_blocks as f32;
+		// 	println!(
+		// 		"Tick: {}, Host turn: {}, Our turn: {}, Packet queue: {}, Blocks: {}, Block Count: {}, Expected PPS: {}",
+		// 		self.tick,
+		// 		self.is_host_transmit_turn(),
+		// 		self.is_our_turn(),
+		// 		self.message_queue.len(),
+		// 		self.blocks.len(),
+		// 		self.total_blocks,
+		// 		expected_pps
+		// 	);
+		// }
+
+		if now() - self.last_count_reset_time > 1.0 {
+			self.prev_mpls = self.messages_pushed_last_second;
+			self.messages_pushed_last_second = 0;
+			self.last_count_reset_time = now();
 		}
 
 		if self.is_host_transmit_turn() {
@@ -198,11 +245,12 @@ impl Datalink {
 				self.transmit(next_message.serialize().value);
 			}
 
-			if self.message_queue.len() > 15 {
+			if self.message_queue.len() > 100 {
 				println!("Datalink {} has excessive message queue size: {}", self.id, self.message_queue.len());
-				for message in &self.message_queue {
-					println!("{:?}", message);
-				}
+				println!("Datalink {} Previous MPLS: {}", self.id, self.prev_mpls);
+				// for message in &self.message_queue {
+				// 	println!("{:?}", message);
+				// }
 			}
 		}
 
@@ -223,6 +271,7 @@ impl Datalink {
 
 	fn send_message(&mut self, message: Message) {
 		self.message_queue.push(message);
+		self.messages_pushed_last_second += 1;
 	}
 
 	fn transmit(&self, value: u64) {
@@ -264,10 +313,30 @@ impl Datalink {
 				let track = self.get_track_mut(track_info.track_id);
 				track.contact_id = track_info.contact_id;
 				track.contact_type = track_info.contact_type;
+				track.is_allied = track_info.is_allied;
 			}
 			Message::TrackPosition(track_position) => self.get_track_mut(track_position.track_id).update_position(track_position.position),
 			Message::TrackVelocity(track_velocity) => self.get_track_mut(track_velocity.track_id).update_velocity(track_velocity.velocity),
+			Message::IFFPosition(iff_pos) => self.handle_iff_position(iff_pos),
 			_ => self.core_message_queue.push(packet),
+		}
+	}
+
+	fn handle_iff_position(&mut self, iff_pos: IFFPosition) {
+		let existing = self.friendly_positions.iter_mut().find(|f| f.dl_id == iff_pos.dl_id);
+		if let Some(existing) = existing {
+			existing.position = iff_pos.position;
+			existing.sphere.set_pos(iff_pos.position + Vector3::random());
+			existing.sphere.set_color(0.0, 1.0, 0.0);
+			existing.sphere.set_radius(15.0);
+		} else {
+			let pos = FriendlyPosition {
+				position: iff_pos.position,
+				dl_id: iff_pos.dl_id,
+				sphere: UpdatableSphere::new(),
+			};
+
+			self.friendly_positions.push(pos);
 		}
 	}
 
@@ -284,6 +353,8 @@ impl Datalink {
 					self.id = net_info.next_id;
 					self.our_block = self.our_request_block;
 					println!("Joined network with id {}", self.id);
+
+					configure_control_system();
 				} else {
 					// Denied
 					self.send_join_request();
@@ -462,64 +533,64 @@ impl Datalink {
 }
 
 thread_local! {
-	static FC: RefCell<Datalink> = RefCell::new(Datalink::new());
+	static DL: RefCell<Datalink> = RefCell::new(Datalink::new());
 }
 
 pub fn dl_declare_host() {
-	FC.with(|fc| {
+	DL.with(|fc| {
 		let mut fc = fc.borrow_mut();
 		fc.setup_as_host();
 	});
 }
 
 pub fn update_dl() {
-	FC.with(|fc| {
+	DL.with(|fc| {
 		let mut fc = fc.borrow_mut();
 		fc.update();
 	});
 }
 
 pub fn get_tick() -> u32 {
-	FC.with(|fc| {
+	DL.with(|fc| {
 		let fc = fc.borrow();
 		fc.tick
 	})
 }
 
 pub fn send_message(message: Message) {
-	FC.with(|fc| {
+	DL.with(|fc| {
 		let mut fc = fc.borrow_mut();
 		fc.send_message(message);
 	});
 }
 
 pub fn get_core_message_queue() -> Vec<Message> {
-	FC.with(|fc| {
+	DL.with(|fc| {
 		let mut fc = fc.borrow_mut();
 		fc.get_core_message_queue()
 	})
 }
 
 pub fn get_dl_track(track_id: u16) -> Option<DatalinkTrack> {
-	FC.with(|fc| fc.borrow().get_track(track_id).copied())
+	DL.with(|fc| fc.borrow().get_track(track_id).copied())
 }
 
 pub fn get_ship_tracks() -> Vec<DatalinkTrack> {
-	FC.with(|fc| fc.borrow().get_ship_tracks())
+	DL.with(|fc| fc.borrow().get_ship_tracks())
 }
 
 pub fn update_track_from_local_data(contact_id_64: i64, rc_type: RadarTargetType, position: Vector3, velocity: Vector3) {
-	FC.with(|fc| fc.borrow_mut().update_track_from_local_data(contact_id_64, rc_type, position, velocity));
+	DL.with(|fc| fc.borrow_mut().update_track_from_local_data(contact_id_64, rc_type, position, velocity));
 }
 
 pub fn datalink_disconnect() {
-	FC.with(|fc| {
+	DL.with(|fc| {
 		fc.borrow_mut().disconnect();
 	});
 }
 
 pub fn dl_net_id(contact_id: i64) -> Option<u16> {
-	FC.with(|fc| fc.borrow_mut().net_id(contact_id))
+	DL.with(|fc| fc.borrow_mut().net_id(contact_id))
 }
 
 pub fn dl_crunch_id(contact_id: i64) -> u32 {
@@ -527,5 +598,20 @@ pub fn dl_crunch_id(contact_id: i64) -> u32 {
 }
 
 pub fn own_dl_id() -> u8 {
-	FC.with(|fc| fc.borrow().id)
+	DL.with(|fc| fc.borrow().id)
+}
+
+pub fn is_position_friendly(position: Vector3) -> bool {
+	DL.with(|fc| {
+		let fc = fc.borrow();
+		fc.friendly_positions.iter().any(|f| (f.position - position).length() < IFF_FRIEND_DISTANCE)
+	})
+}
+
+pub fn get_ship_pos_from_iff() -> Option<Vector3> {
+	DL.with(|fc| {
+		let fc = fc.borrow();
+		let pos = fc.friendly_positions.iter().find(|f| f.dl_id == 0);
+		pos.map(|f| f.position)
+	})
 }

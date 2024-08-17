@@ -12,13 +12,14 @@ use crate::{
 		utils::{deg, lerp},
 		vector3::Vector3,
 	},
-	updatable_debug_line::UpdatableDebugLine,
+	updatable_debug::UpdatableDebugLine,
 };
 
 pub enum GuidanceMode {
 	Drift,
 	Stop,
 	StopAtPoint,
+	FastStopAtPoint,
 	Impact,
 }
 
@@ -43,6 +44,7 @@ pub struct FlightController {
 	do_engine_pulsing: bool,
 
 	pub guidance_mode: GuidanceMode,
+	pub point_at_while_idle: Option<Vector3>,
 
 	pid_x: PID,
 	pid_y: PID,
@@ -79,6 +81,7 @@ impl FlightController {
 			max_throttle: 1.0,
 
 			guidance_mode: GuidanceMode::Drift,
+			point_at_while_idle: None,
 
 			command_line: UpdatableDebugLine::new(),
 			target_line: UpdatableDebugLine::new(),
@@ -86,9 +89,9 @@ impl FlightController {
 	}
 
 	fn setup_for_missile(&mut self) {
-		self.pid_x = PID::new(15.95, 0.0, 30.82, 10.0);
-		self.pid_y = PID::new(15.95, 0.0, 30.82, 10.0);
-		self.pid_z = PID::new(15.95, 0.0, 30.82, 10.0);
+		self.pid_x = PID::new(16.77, 0.0, 30.82, 10.0);
+		self.pid_y = PID::new(16.77, 0.0, 30.82, 10.0);
+		self.pid_z = PID::new(16.77, 0.0, 30.82, 10.0);
 
 		self.max_target_speed = 250.0;
 		self.min_target_speed = 25.0;
@@ -103,6 +106,11 @@ impl FlightController {
 		let maybe_target_point = self.get_target_point();
 
 		if maybe_target_point.is_none() {
+			if self.point_at_while_idle.is_some() {
+				self.point_at(self.point_at_while_idle.unwrap(), dt);
+				return;
+			}
+
 			if self.using_non_pid_guidance {
 				return;
 			}
@@ -113,8 +121,10 @@ impl FlightController {
 		}
 
 		let target_point = maybe_target_point.unwrap();
+		let dist_to_tp = (target_point - vehicle_get_position().into()).length();
+		if dist_to_tp < 100.0 {}
 
-		if self.current_tick % 100 == 0 {
+		if self.current_tick % 25 == 0 {
 			self.command_line.set_a(vehicle_get_position().into());
 			self.command_line.set_b(target_point);
 
@@ -123,33 +133,7 @@ impl FlightController {
 			self.target_line.set_color(1.0, 0.0, 0.0);
 		}
 
-		let ship_pos: Vector3 = vehicle_get_position().into();
-		let ship_orientation: Quaternion = vehicle_get_orientation().into();
-
-		let target_dir = (target_point - ship_pos).normalized();
-		let local_dir = ship_orientation.invert() * target_dir;
-		let target_orientation = Quaternion::from_vectors(&Vector3::new(0.0, 0.0, -1.0), &local_dir);
-		let angle_error = target_orientation.axis_angle();
-		let mut angle_error_degrees = deg(angle_error.angle);
-
-		if angle_error_degrees.is_nan() {
-			angle_error_degrees = 0.0;
-			println!("Angle error is NaN");
-		}
-
-		if angle_error_degrees < 0.1 {
-			self.kill_angular_velocity();
-		} else {
-			let axis = angle_error.axis.normalized();
-			let p_x = self.pid_x.update(axis.x * angle_error_degrees, dt);
-			let p_y = self.pid_y.update(axis.y * angle_error_degrees, dt);
-			let p_z = self.pid_z.update(axis.z * angle_error_degrees, dt);
-			let max = p_x.max(p_y).max(p_z).max(1.0);
-
-			let torque_vector = ship_orientation * (Vector3::new(p_x, p_y, p_z) / max);
-
-			wheel_set_torque(torque_vector.x, torque_vector.y, torque_vector.z);
-		}
+		let angle_error_degrees = self.point_at(target_point, dt);
 
 		let fuel = engine_get_fuel_amount();
 		if fuel < 0.1 {
@@ -186,11 +170,44 @@ impl FlightController {
 		self.current_tick += 1;
 	}
 
+	fn point_at(&mut self, point: Vector3, dt: f32) -> f32 {
+		let ship_pos: Vector3 = vehicle_get_position().into();
+		let ship_orientation: Quaternion = vehicle_get_orientation().into();
+
+		let target_dir = (point - ship_pos).normalized();
+		let local_dir = ship_orientation.invert() * target_dir;
+		let target_orientation = Quaternion::from_vectors(&Vector3::new(0.0, 0.0, -1.0), &local_dir);
+		let angle_error = target_orientation.axis_angle();
+		let mut angle_error_degrees = deg(angle_error.angle);
+
+		if angle_error_degrees.is_nan() {
+			angle_error_degrees = 0.0;
+			println!("Angle error is NaN");
+		}
+
+		if angle_error_degrees < 0.1 {
+			self.kill_angular_velocity();
+		} else {
+			let axis = angle_error.axis.normalized();
+			let p_x = self.pid_x.update(axis.x * angle_error_degrees, dt);
+			let p_y = self.pid_y.update(axis.y * angle_error_degrees, dt);
+			let p_z = self.pid_z.update(axis.z * angle_error_degrees, dt);
+			let max = p_x.max(p_y).max(p_z).max(1.0);
+
+			let torque_vector = ship_orientation * (Vector3::new(p_x, p_y, p_z) / max);
+
+			wheel_set_torque(torque_vector.x, torque_vector.y, torque_vector.z);
+		}
+
+		return angle_error_degrees;
+	}
+
 	fn get_target_point(&mut self) -> Option<Vector3> {
 		match self.guidance_mode {
 			GuidanceMode::Drift => return None,
 			GuidanceMode::Stop => return self.get_stop_target_point(),
 			GuidanceMode::StopAtPoint => return self.get_vel_corrected_target_point_for_stop(),
+			GuidanceMode::FastStopAtPoint => return self.get_fast_vel_corrected_target_point_for_stop(),
 			GuidanceMode::Impact => return self.get_vel_corrected_target_point_for_impact(),
 		}
 	}
@@ -254,6 +271,26 @@ impl FlightController {
 
 		let wanted_vel = (self.target_point - ship_pos).normalized() * self.current_target_speed;
 		// println!("Wanted vel: {}", wanted_vel);
+		let delta = wanted_vel - ship_vel;
+
+		Some(self.target_point + delta * 10000.0)
+	}
+
+	fn get_fast_vel_corrected_target_point_for_stop(&mut self) -> Option<Vector3> {
+		let ship_pos: Vector3 = vehicle_get_position().into();
+		let ship_vel: Vector3 = vehicle_get_velocity().into();
+
+		let dist_to_tp = (self.target_point - ship_pos).length();
+		let speed = ship_vel.length();
+
+		let speed_ratio = speed / self.max_target_speed;
+		let stopping_range_start = self.stop_range_start * speed_ratio;
+		let cur_target_speed_max = self.max_target_speed;
+		self.current_target_speed = self
+			.min_target_speed
+			.max(lerp(0.0, cur_target_speed_max, (dist_to_tp / stopping_range_start).clamp(0.0, 1.0)));
+
+		let wanted_vel = (self.target_point - ship_pos).normalized() * self.current_target_speed;
 		let delta = wanted_vel - ship_vel;
 
 		Some(self.target_point + delta * 10000.0)

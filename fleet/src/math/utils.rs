@@ -35,3 +35,24 @@ macro_rules! get {
 		}
 	};
 }
+
+#[macro_export]
+macro_rules! get_err {
+	($e:expr, $st:expr $(, $args:expr)+) => {
+		if let Some(x) = $e {
+			x
+		} else {
+			println!($st, $($args)+);
+			return;
+		}
+	};
+
+	($e:expr, $st:expr) => {
+		if let Some(x) = $e {
+			x
+		} else {
+			println!($st);
+			return;
+		}
+	};
+}

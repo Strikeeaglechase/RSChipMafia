@@ -26,7 +26,7 @@ function runSim() {
 		optReleasePath,
 		"-d",
 		"true",
-		"true",
+		"false",
 		"-o",
 		optReleasePath
 		// "--no-asteroids"

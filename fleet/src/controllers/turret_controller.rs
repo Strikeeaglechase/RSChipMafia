@@ -4,7 +4,7 @@ use protologic_core::{
 	constants::turret_shell_speed,
 	guns::{
 		gun_get_bearing, gun_get_elevation, gun_get_magazine_reloadtime, gun_get_magazine_remaining, gun_get_magazine_type, gun_get_refiretime, gun_reload,
-		gun_set_bearing, gun_set_elevation, gun_trigger, AmmoType,
+		gun_set_bearing, gun_set_elevation, gun_set_fuse, gun_trigger, AmmoType,
 	},
 	physics::{vehicle_get_orientation, vehicle_get_position, vehicle_get_velocity},
 };
@@ -28,10 +28,12 @@ const SHOT_INTERVAL: f32 = 0.5;
 impl TurretController {
 	pub fn new(index: i32) -> TurretController {
 		println!("Setting up turret {}!", index);
+		gun_reload(index, AmmoType::Flak);
 		TurretController { target_id: 0, last_shot_time: 0.0, index }
 	}
 
 	pub fn update(&mut self, last_shot_time: f32) {
+		gun_set_fuse(self.index, 0.1);
 		if self.target_id == 0 {
 			return;
 		}
@@ -63,6 +65,20 @@ impl TurretController {
 		if gun_get_magazine_remaining(self.index) == 0 && gun_get_magazine_reloadtime(self.index) == 0.0 {
 			gun_reload(self.index, AmmoType::ArmourPiercing);
 		}
+	}
+
+	pub fn self_det(&self) -> bool {
+		if gun_get_magazine_remaining(self.index) == 0 && gun_get_magazine_reloadtime(self.index) == 0.0 {
+			gun_reload(self.index, AmmoType::Flak);
+			return false;
+		}
+
+		if self.ready_to_fire() {
+			gun_set_fuse(self.index, 0.001);
+			gun_trigger(self.index);
+			return true;
+		}
+		return false;
 	}
 
 	pub fn set_target(&mut self, target: &RadarTrack) {

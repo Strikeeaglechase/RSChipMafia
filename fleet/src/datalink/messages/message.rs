@@ -3,8 +3,9 @@ use enum_mac::EnumKeys;
 use crate::datalink::u64_view::U64View;
 
 use super::{
-	assign_attack_target::AssignAttackTarget, join_request::JoinRequest, leave_network::LeaveNetwork, net_info::NetInfo, ready_attack_time::ReadyAttackTime,
-	track_id::TrackId, track_info::TrackInfo, track_position::TrackPosition, track_velocity::TrackVelocity,
+	assign_attack_target::AssignAttackTarget, iff_pos::IFFPosition, intercept_task_assign::InterceptTaskAssign, join_request::JoinRequest,
+	leave_network::LeaveNetwork, net_info::NetInfo, ready_attack_time::ReadyAttackTime, track_id::TrackId, track_info::TrackInfo, track_position::TrackPosition,
+	track_velocity::TrackVelocity,
 };
 
 pub trait DatalinkMessage {
@@ -27,6 +28,9 @@ pub enum Message {
 	ReadyAttackTime(ReadyAttackTime),
 	TrackInfo(TrackInfo),
 	AssignAttackTarget(AssignAttackTarget),
+
+	IFFPosition(IFFPosition),
+	InterceptTaskAssign(InterceptTaskAssign),
 }
 
 impl Message {
@@ -45,6 +49,8 @@ impl Message {
 			MessageKey::ReadyAttackTime => Message::ReadyAttackTime(ReadyAttackTime::parse(view)),
 			MessageKey::TrackInfo => Message::TrackInfo(TrackInfo::parse(view)),
 			MessageKey::AssignAttackTarget => Message::AssignAttackTarget(AssignAttackTarget::parse(view)),
+			MessageKey::IFFPosition => Message::IFFPosition(IFFPosition::parse(view)),
+			MessageKey::InterceptTaskAssign => Message::InterceptTaskAssign(InterceptTaskAssign::parse(view)),
 		}
 	}
 
@@ -59,6 +65,8 @@ impl Message {
 			Message::ReadyAttackTime(ready_attack_time) => ready_attack_time.serialize(),
 			Message::TrackInfo(track_info) => track_info.serialize(),
 			Message::AssignAttackTarget(assign_attack_target) => assign_attack_target.serialize(),
+			Message::IFFPosition(iff_position) => iff_position.serialize(),
+			Message::InterceptTaskAssign(intercept_task_assign) => intercept_task_assign.serialize(),
 		};
 	}
 }
